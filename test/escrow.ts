@@ -5,7 +5,7 @@ import {
 import { anyValue } from "@nomicfoundation/hardhat-chai-matchers/withArgs";
 import { expect } from "chai";
 import hre from "hardhat";
-import { SalesAgreement } from "../typechain-types";
+import { SalesAgreement,MockERC20} from "../typechain-types";
 
 describe("SalesAgreement Contract", function () {
   async function deploySalesAgreementFixture() {
@@ -183,4 +183,94 @@ describe("SalesAgreement Contract", function () {
       salesAgreement.connect(escrowAgent).releaseEscrow(0)
     ).to.be.revertedWithCustomError(salesAgreement, "DeliveryNotConfirmed");
   });
+
+    it("Should handle ERC20 token payments correctly", async function () {
+    const { salesAgreement, seller, buyer, escrowAgent } = await loadFixture(
+      deploySalesAgreementFixture
+    );
+
+    // Deploy MockERC20
+    const MockERC20Factory = await hre.ethers.getContractFactory("MockERC20");
+    const mockToken = (await MockERC20Factory.deploy(
+      "Mock Token",
+      "MTK"
+    )) as unknown as MockERC20;
+    await mockToken.waitForDeployment();
+
+    // Mint tokens to buyer
+    await mockToken.mint(buyer.address, hre.ethers.parseEther("10.0"));
+
+    const price = hre.ethers.parseEther("1.0");
+    const deliveryDate = (await time.latest()) + 86400;
+
+    // Create agreement with ERC20 token
+    await salesAgreement
+      .connect(seller)
+      .createAgreement(
+        "Item",
+        "Description",
+        price,
+        buyer.address,
+        await mockToken.getAddress(),
+        deliveryDate,
+        true,
+        escrowAgent.address,
+        true,
+        0
+      );
+
+    // Approve token spending
+    await mockToken
+      .connect(buyer)
+      .approve(await salesAgreement.getAddress(), price);
+
+    // Confirm agreement with token
+    await expect(
+      salesAgreement.connect(buyer).confirmAgreement(0)
+    ).to.emit(salesAgreement, "AgreementConfirmed");
+
+    // Verify token balances
+    expect(await mockToken.balanceOf(await salesAgreement.getAddress())).to.equal(
+      price
+    );
+  });
+
+  it("Should revert if trying to send ETH for ERC20 agreement", async function () {
+    const { salesAgreement, seller, buyer, escrowAgent } = await loadFixture(
+      deploySalesAgreementFixture
+    );
+
+    // Deploy MockERC20
+    const MockERC20Factory = await hre.ethers.getContractFactory("MockERC20");
+    const mockToken = (await MockERC20Factory.deploy(
+      "Mock Token",
+      "MTK"
+    )) as unknown as MockERC20;
+    await mockToken.waitForDeployment();
+
+    const price = hre.ethers.parseEther("1.0");
+    const deliveryDate = (await time.latest()) + 86400;
+
+    // Create agreement with ERC20 token
+    await salesAgreement
+      .connect(seller)
+      .createAgreement(
+        "Item",
+        "Description",
+        price,
+        buyer.address,
+        await mockToken.getAddress(),
+        deliveryDate,
+        true,
+        escrowAgent.address,
+        true,
+        0
+      );
+
+    // Try to confirm with ETH
+    await expect(
+      salesAgreement.connect(buyer).confirmAgreement(0, { value: price })
+    ).to.be.revertedWithCustomError(salesAgreement, "ETHNotAccepted");
+  });
+
 });
