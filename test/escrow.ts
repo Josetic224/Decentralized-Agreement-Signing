@@ -97,6 +97,7 @@ describe("SalesAgreement Contract", function () {
     const disputeResolution = 0; // COURT
     const paymentToken = hre.ethers.ZeroAddress; // ETH payment
 
+    // Create agreement
     await salesAgreement
       .connect(seller)
       .createAgreement(
@@ -111,14 +112,75 @@ describe("SalesAgreement Contract", function () {
         isRefundable,
         disputeResolution
       );
+
+    // Buyer confirms and sends payment
+    await salesAgreement.connect(buyer).confirmAgreement(0, { value: price });
+
     // Advance time to ensure delivery date is reached
     await time.increaseTo(deliveryDate + 1);
 
-    await salesAgreement.connect(buyer).confirmAgreement(0, { value: price });
+    // Buyer marks the item as delivered
+    await salesAgreement.connect(buyer).markAsDelivered(0);
 
-    await expect(salesAgreement.connect(escrowAgent).releaseEscrow(0)).to.emit(
-      salesAgreement,
-      "AgreementCompleted"
+    // Get initial balances
+    const initialSellerBalance = await hre.ethers.provider.getBalance(
+      seller.address
     );
+    const initialContractBalance = await hre.ethers.provider.getBalance(
+      await salesAgreement.getAddress()
+    );
+
+    // Release escrow and check event
+    await expect(salesAgreement.connect(escrowAgent).releaseEscrow(0))
+      .to.emit(salesAgreement, "AgreementCompleted")
+      .withArgs(0, seller.address, buyer.address);
+
+    // Verify final balances
+    const finalSellerBalance = await hre.ethers.provider.getBalance(
+      seller.address
+    );
+    const finalContractBalance = await hre.ethers.provider.getBalance(
+      await salesAgreement.getAddress()
+    );
+
+    expect(finalSellerBalance - initialSellerBalance).to.equal(price);
+    expect(initialContractBalance - finalContractBalance).to.equal(price);
+  });
+
+  it("Should revert if trying to release escrow before marking as delivered", async function () {
+    const { salesAgreement, seller, buyer, escrowAgent } = await loadFixture(
+      deploySalesAgreementFixture
+    );
+    const itemName = "Laptop";
+    const itemDescription = "Gaming Laptop with RTX 4090";
+    const price = hre.ethers.parseEther("1.0");
+    const deliveryDate = (await time.latest()) + 86400;
+    const isEscrowUsed = true;
+    const isRefundable = true;
+    const disputeResolution = 0;
+    const paymentToken = hre.ethers.ZeroAddress;
+
+    await salesAgreement
+      .connect(seller)
+      .createAgreement(
+        itemName,
+        itemDescription,
+        price,
+        buyer.address,
+        paymentToken,
+        deliveryDate,
+        isEscrowUsed,
+        escrowAgent.address,
+        isRefundable,
+        disputeResolution
+      );
+
+    await salesAgreement.connect(buyer).confirmAgreement(0, { value: price });
+    await time.increaseTo(deliveryDate + 1);
+
+    // Try to release escrow before marking as delivered
+    await expect(
+      salesAgreement.connect(escrowAgent).releaseEscrow(0)
+    ).to.be.revertedWithCustomError(salesAgreement, "DeliveryNotConfirmed");
   });
 });
